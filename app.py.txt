@@ -1,0 +1,179 @@
+import streamlit as st
+import pytesseract
+from PIL import Image
+import pandas as pd
+import os
+from datetime import datetime
+
+# --- APP CONFIGURATION ---
+st.set_page_config(page_title="Utility Field Master", layout="wide")
+
+# --- NESC RULE DATABASE (The "Brain") ---
+# You can easily edit these values as NESC rules evolve.
+NESC_RULES = {
+    "Comm Worker Safety Zone": {
+        "limit": 40.0, 
+        "unit": "inches", 
+        "type": "min", 
+        "ref": "Rule 238-B",
+        "desc": "Clearance between neutral and communication."
+    },
+    "Road Clearance (Drivable)": {
+        "limit": 15.5, 
+        "unit": "feet", 
+        "type": "min", 
+        "ref": "Rule 232",
+        "desc": "Vertical clearance over roads/streets."
+    },
+    "Railroad Crossing": {
+        "limit": 27.0, 
+        "unit": "feet", 
+        "type": "min", 
+        "ref": "Rule 232",
+        "desc": "Clearance over track rails."
+    },
+    "Waterway (Non-Sail)": {
+        "limit": 14.0, 
+        "unit": "feet", 
+        "type": "min", 
+        "ref": "Rule 232",
+        "desc": "Areas suitable for boating (no sail)."
+    },
+    "Climbing Space": {
+        "limit": 24.0, 
+        "unit": "inches", 
+        "type": "min", 
+        "ref": "Rule 236",
+        "desc": "Clear quadrant for worker ascent."
+    },
+    "Mid-Span (Wire-to-Wire)": {
+        "limit": 12.0, 
+        "unit": "inches", 
+        "type": "min", 
+        "ref": "Rule 235",
+        "desc": "Clearance between supply/comm in span."
+    }
+}
+
+DATA_FILE = 'utility_field_data.csv'
+
+def load_data():
+    columns = ["Date", "Pole Number", "Location", "Inspection Type", "Measurement", "Result", "NESC Issues", "Image Name"]
+    if os.path.exists(DATA_FILE):
+        return pd.read_csv(DATA_FILE)
+    else:
+        return pd.DataFrame(columns=columns)
+
+def save_data(new_entry):
+    df = load_data()
+    new_df = pd.DataFrame([new_entry])
+    df = pd.concat([df, new_df], ignore_index=True)
+    df.to_csv(DATA_FILE, index=False)
+    return df
+
+# --- UI LAYOUT ---
+st.title("⚡ Utility Field Master")
+st.markdown("**Professional NESC Compliance & Audit Tool**")
+
+# --- SIDEBAR: QUICK REFERENCE GUIDE ---
+st.sidebar.header("📘 NESC Quick Guide")
+st.sidebar.info("Reference for common minimums.")
+for rule_name, details in NESC_RULES.items():
+    with st.sidebar.expander(rule_name):
+        st.write(f"**Limit:** {details['limit']} {details['unit']}")
+        st.write(f"**Ref:** {details['ref']}")
+        st.caption(details['desc'])
+
+col1, col2 = st.columns([1, 1.5])
+
+# --- LEFT: PHOTO CAPTURE ---
+with col1:
+    st.subheader("1. Evidence Capture")
+    img_file = st.file_uploader("Upload Pole/Mid-Span Photo", type=['jpg', 'png', 'jpeg'])
+    
+    extracted_text = ""
+    if img_file:
+        image = Image.open(img_file)
+        st.image(image, caption="Field Photo", use_container_width=True)
+        if st.button("🔍 Scan for Pole Tag"):
+            with st.spinner("Processing..."):
+                try:
+                    extracted_text = pytesseract.image_to_string(image)
+                    st.success(f"Detected: {extracted_text}")
+                except:
+                    st.warning("OCR Engine busy or unavailable.")
+
+# --- RIGHT: SMART INSPECTION FORM ---
+with col2:
+    st.subheader("2. Audit & Compliance")
+    
+    with st.form("audit_form"):
+        # Basic Info
+        c1, c2 = st.columns(2)
+        with c1:
+            pole_id = st.text_input("Pole ID / Tag", value=extracted_text.strip())
+        with c2:
+            loc = st.text_input("GPS / Address")
+            
+        st.divider()
+        
+        # DYNAMIC RULE SELECTOR
+        st.markdown("### 📏 Measurement Check")
+        selected_rule = st.selectbox("Select Inspection Type", list(NESC_RULES.keys()))
+        
+        # Get rule details based on selection
+        rule_data = NESC_RULES[selected_rule]
+        req_limit = rule_data['limit']
+        unit = rule_data['unit']
+        
+        st.info(f"**Requirement:** Must be greater than **{req_limit} {unit}** ({rule_data['ref']})")
+        
+        measurement = st.number_input(f"Your Measurement ({unit})", min_value=0.0, step=0.1)
+        
+        # REAL-TIME PASS/FAIL LOGIC
+        result = "NOT TESTED"
+        if measurement > 0:
+            if measurement < req_limit:
+                st.error(f"❌ FAIL: {measurement} {unit} is insufficient.")
+                result = "FAIL"
+            else:
+                st.success(f"✅ PASS: Compliant with {rule_data['ref']}.")
+                result = "PASS"
+        
+        st.divider()
+        
+        # VISUAL ISSUES CHECKLIST
+        st.markdown("### ⚠️ Visual Violations")
+        issues = st.multiselect("Select All That Apply", 
+                                ["Mid-Span Sag Issue", 
+                                 "Drivable Surface Encroachment",
+                                 "Waterway Clearance Issue",
+                                 "Climbing Space Obstructed (Steps/Vines)",
+                                 "Broken Ground",
+                                 "Double Wood / Transfer Pending"])
+        
+        notes = st.text_area("Audit Notes")
+        
+        submitted = st.form_submit_button("💾 Submit Audit Record")
+        
+        if submitted:
+            entry = {
+                "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Pole Number": pole_id,
+                "Location": loc,
+                "Inspection Type": selected_rule,
+                "Measurement": f"{measurement} {unit}",
+                "Result": result,
+                "NESC Issues": ", ".join(issues),
+                "Image Name": img_file.name if img_file else "None"
+            }
+            save_data(entry)
+            st.success(f"Record Saved: {result}")
+
+# --- DATA SHEET ---
+st.divider()
+st.subheader("📋 Master Audit Log")
+if os.path.exists(DATA_FILE):
+    df = load_data()
+    # Highlight Failures in Red text for visibility
+    st.dataframe(df.style.applymap(lambda x: 'color: red' if x == 'FAIL' else 'color: green' if x == 'PASS' else '', subset=['Result']), use_container_width=True)
